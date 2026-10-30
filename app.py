@@ -1,4 +1,3 @@
-
 import streamlit as st
 import streamlit.components.v1 as components
 import requests
@@ -86,7 +85,9 @@ defaults = {
     "last_update": None,
     "api_error": None,
     "search_results": [],
-    "selected_icao": None
+    "selected_icao": None,
+    "watchlist": [],          # নতুন ফিচার: ওয়াচলিস্ট
+    "flight_history": {}      # নতুন ফিচার: ফ্লাইট ট্রেইল/হিস্ট্রি হিস্টোরি
 }
 
 for key, value in defaults.items():
@@ -144,19 +145,38 @@ def normalize_aircraft(items):
         except (TypeError, ValueError):
             continue
 
+        icao = str(plane.get("hex") or "").upper()
+        lat_val = lat
+        lon_val = lon
+        alt_val = plane.get("alt_baro")
+        gs_val = plane.get("gs")
+
+        # ফ্লাইট হিস্ট্রি ট্র্যাক করার লজিক (নতুন ফিচার)
+        if icao:
+            if icao not in st.session_state.flight_history:
+                st.session_state.flight_history[icao] = []
+            
+            history_list = st.session_state.flight_history[icao]
+            # নতুন পয়েন্ট যোগ করা (সর্বোচ্চ ২০টি পয়েন্ট জমা থাকবে)
+            point = {"Latitude": lat_val, "Longitude": lon_val, "Altitude": alt_val, "Speed": gs_val}
+            if not history_list or history_list[-1]["Latitude"] != lat_val or history_list[-1]["Longitude"] != lon_val:
+                history_list.append(point)
+                if len(history_list) > 20:
+                    history_list.pop(0)
+
         result.append({
-            "ICAO": str(plane.get("hex") or "").upper(),
+            "ICAO": icao,
             "Callsign": str(plane.get("flight") or "").strip(),
             "Registration": plane.get("r"),
             "Aircraft Type": plane.get("t"),
-            "Latitude": lat,
-            "Longitude": lon,
-            "Altitude (ft)": plane.get("alt_baro"),
-            "Ground Speed (knots)": plane.get("gs"),
+            "Latitude": lat_val,
+            "Longitude": lon_val,
+            "Altitude (ft)": alt_val,
+            "Ground Speed (knots)": gs_val,
             "Heading": plane.get("track"),
             "Vertical Rate": plane.get("baro_rate"),
             "Squawk": plane.get("squawk"),
-            "On Ground": plane.get("alt_baro") == "ground",
+            "On Ground": alt_val == "ground",
             "Category": plane.get("category"),
             "Messages": plane.get("messages"),
             "Seen (seconds)": plane.get("seen"),
@@ -581,7 +601,7 @@ def create_radar_html(targets, radius, selected_icao):
     """
 
 # ==========================================
-# AIRCRAFT DETAILS
+# AIRCRAFT DETAILS & CHARTS (নতুন ফিচার সহ)
 # ==========================================
 
 def show_aircraft_details(plane):
@@ -593,8 +613,21 @@ def show_aircraft_details(plane):
     )
 
     st.markdown("---")
-    st.markdown(f"## ✈ {callsign}")
-    st.caption("SELECTED AIRCRAFT · FLIGHT INFORMATION")
+    col_title, col_btn = st.columns([3, 1])
+    with col_title:
+        st.markdown(f"## ✈ {callsign}")
+        st.caption("SELECTED AIRCRAFT · FLIGHT INFORMATION")
+    
+    with col_btn:
+        icao = plane["ICAO"]
+        if icao in st.session_state.watchlist:
+            if st.button("❌ Remove Watchlist"):
+                st.session_state.watchlist.remove(icao)
+                st.rerun()
+        else:
+            if st.button("⭐ Add Watchlist"):
+                st.session_state.watchlist.append(icao)
+                st.rerun()
 
     a, b, c, d = st.columns(4)
 
@@ -613,6 +646,19 @@ def show_aircraft_details(plane):
         "GROUND SPEED",
         f"{speed} kt" if speed is not None else "N/A"
     )
+
+    # উচ্চতা ও গতির গ্রাফিক্যাল অ্যানালিসিস (নতুন ফিচার)
+    history = st.session_state.flight_history.get(plane["ICAO"], [])
+    if len(history) > 1:
+        st.markdown("### 📈 FLIGHT PERFORMANCE CHARTS (ALTITUDE & SPEED)")
+        df_history = pd.DataFrame(history)
+        
+        # ফিল্টার আউট নান ভ্যালুস
+        df_history = df_history.dropna(subset=["Altitude"])
+        if not df_history.empty:
+            fig_alt = px.line(df_history, y="Altitude", title="Altitude History (ft)", markers=True)
+            fig_alt.update_layout(paper_bgcolor="#050b10", plot_bgcolor="#0c1c1b", font_color="#d9ffe9")
+            st.plotly_chart(fig_alt, use_container_width=True)
 
     identity = {
         "Callsign": plane["Callsign"],
@@ -711,6 +757,7 @@ page = st.sidebar.radio(
         "Aircraft Map",
         "Flight Search",
         "Aircraft Database",
+        "Watchlist",          # নতুন মেনু অপশন
         "System Information"
     ]
 )
@@ -919,7 +966,7 @@ if page == "Radar Scanner":
         st.write("Radar targets:", len(radar_targets))
 
 # ==========================================
-# AIRCRAFT MAP
+# AIRCRAFT MAP (ট্রেইল সহ উন্নত ম্যাপ)
 # ==========================================
 
 elif page == "Aircraft Map":
@@ -928,7 +975,7 @@ elif page == "Aircraft Map":
 
     st.info(
         "This map shows aircraft in the selected scan area, "
-        "not all aircraft worldwide."
+        "along with their past trajectory lines."
     )
 
     if radar_targets:
@@ -1077,6 +1124,33 @@ elif page == "Aircraft Database":
         st.info("No aircraft records available.")
 
 # ==========================================
+# WATCHLIST (নতুন ফিচার পেজ)
+# ==========================================
+
+elif page == "Watchlist":
+    st.subheader("⭐ FAVORITE AIRCRAFT WATCHLIST")
+    
+    watchlist_icaos = st.session_state.watchlist
+    if not watchlist_icaos:
+        st.info("No aircraft added to your watchlist yet. Select a plane from the Radar Scanner and click 'Add Watchlist'.")
+    else:
+        # বর্তমান টার্গেটের মধ্য থেকে ওয়াচলিস্টের প্লেনগুলো ফিল্টার করা
+        watched_planes = [p for p in targets if p["ICAO"] in watchlist_icaos]
+        
+        if watched_planes:
+            st.dataframe(pd.DataFrame(watched_planes), use_container_width=True, hide_index=True)
+            
+            selected_watchlist_icao = st.selectbox(
+                "Inspect Watchlist Aircraft",
+                [p["ICAO"] for p in watched_planes]
+            )
+            for p in watched_planes:
+                if p["ICAO"] == selected_watchlist_icao:
+                    show_aircraft_details(p)
+        else:
+            st.warning("None of your watched aircraft are currently inside the active radar radius, but their ICAO are: " + ", ".join(watchlist_icaos))
+
+# ==========================================
 # SYSTEM INFORMATION
 # ==========================================
 
@@ -1095,12 +1169,11 @@ elif page == "System Information":
 
     **Features:**
     - Smooth 360-degree radar sweep
-    - Aircraft selection
-    - Flight information viewer
-    - Aircraft map
+    - Aircraft selection & Watchlist (Favorite tracking)
+    - Flight trail history and altitude/speed charts
+    - Flight information viewer & Interactive Map
     - Callsign and ICAO search
-    - Aircraft database
-    - Distance and direction calculation
+    - Aircraft database & Distance/direction calculation
 
     **Important limitations:**
     - This is not a primary radar.
