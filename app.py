@@ -1,217 +1,277 @@
+
 import streamlit as st
 import requests
 import pandas as pd
 import plotly.express as px
+import time
 from datetime import datetime, timezone
 
 try:
     from streamlit_autorefresh import st_autorefresh
-    REFRESH_AVAILABLE = True
+    AUTO_REFRESH_AVAILABLE = True
 except ImportError:
-    REFRESH_AVAILABLE = False
+    AUTO_REFRESH_AVAILABLE = False
 
 
-# =====================================
-# CONFIG
-# =====================================
+# ==========================================
+# PAGE CONFIGURATION
+# ==========================================
 
 st.set_page_config(
     page_title="PLAN RADAR X",
     page_icon="✈️",
-    layout="wide"
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
 API_URL = "https://opensky-network.org/api/states/all"
 
-
-# =====================================
-# DESIGN
-# =====================================
-
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;800&family=Inter:wght@400;500;600;700&display=swap');
+    .stApp {
+        background: #07111f;
+        color: #eaf2ff;
+    }
 
-.stApp {
-    background: #07111f;
-    color: #eaf2ff;
-    font-family: Inter, sans-serif;
-}
+    [data-testid="stSidebar"] {
+        background: #0b1728;
+        border-right: 1px solid #1c3552;
+    }
 
-.block-container {
-    max-width: 1550px;
-    padding-top: 1.5rem;
-}
+    .main-title {
+        font-size: 38px;
+        font-weight: 900;
+        color: #55c7ff;
+        letter-spacing: 3px;
+    }
 
-.hero {
-    background: linear-gradient(120deg,#102b45,#101a32);
-    border: 1px solid #244665;
-    border-radius: 18px;
-    padding: 25px;
-    margin-bottom: 20px;
-}
+    .subtitle {
+        color: #91a9c5;
+        font-size: 14px;
+        letter-spacing: 2px;
+    }
 
-.hero h1 {
-    font-family: Orbitron,sans-serif;
-    color: #4de2ff;
-    letter-spacing: 3px;
-}
+    .info-card {
+        background: #10243a;
+        border: 1px solid #244767;
+        padding: 17px;
+        border-radius: 12px;
+        margin-bottom: 10px;
+    }
 
-.hero p {
-    color: #9db7d2;
-}
+    .info-label {
+        color: #91a9c5;
+        font-size: 12px;
+    }
 
-.metric {
-    background: #101f32;
-    border: 1px solid #213c59;
-    border-radius: 13px;
-    padding: 17px;
-}
+    .info-value {
+        color: #55c7ff;
+        font-size: 23px;
+        font-weight: bold;
+    }
 
-.metric-label {
-    color: #8da9c5;
-    font-size: 13px;
-}
+    div[data-testid="stMetric"] {
+        background: #10243a;
+        border: 1px solid #244767;
+        padding: 15px;
+        border-radius: 12px;
+    }
 
-.metric-value {
-    color: #4de2ff;
-    font-family: Orbitron,sans-serif;
-    font-size: 24px;
-    margin-top: 8px;
-}
+    .stButton button {
+        background: #087db5;
+        color: white;
+        border-radius: 8px;
+        border: none;
+        font-weight: bold;
+    }
 
-.section-title {
-    font-family: Orbitron,sans-serif;
-    color: #4de2ff;
-    font-size: 18px;
-    margin: 22px 0 12px 0;
-}
-
-[data-testid="stSidebar"] {
-    background: #0b192a;
-}
-
-div.stButton > button {
-    background: #087ea4;
-    color: white;
-    border: 1px solid #27c8ed;
-    border-radius: 9px;
-    font-weight: 600;
-}
-
+    .stButton button:hover {
+        background: #119bdc;
+        color: white;
+    }
 </style>
 """, unsafe_allow_html=True)
 
 
-# =====================================
-# AIRCRAFT DATA
-# =====================================
+# ==========================================
+# DATA CONVERSION
+# ==========================================
 
-@st.cache_data(ttl=30, show_spinner=False)
-def get_aircraft_data():
+def safe_value(row, index, default=None):
+    try:
+        value = row[index]
+        return default if value is None else value
+    except (IndexError, TypeError):
+        return default
+
+
+def utc_time(timestamp):
+    if timestamp is None:
+        return "Unavailable"
 
     try:
-        response = requests.get(
-            API_URL,
-            headers={"User-Agent": "PLAN-RADAR-X/1.0"},
-            timeout=40
-        )
-
-        response.raise_for_status()
-
-        data = response.json()
-        states = data.get("states")
-
-        if states is None:
-            return pd.DataFrame(), "No aircraft data available."
-
-        records = []
-
-        for p in states:
-
-            if len(p) < 17:
-                continue
-
-            lat = p[6]
-            lon = p[5]
-
-            if lat is None or lon is None:
-                continue
-
-            altitude = p[7]
-            velocity = p[9]
-            heading = p[10]
-            vertical_rate = p[11]
-            geo_altitude = p[13]
-
-            callsign = str(p[1] or "UNKNOWN").strip().upper()
-
-            records.append({
-
-                "ICAO24": str(p[0]).upper(),
-                "Callsign": callsign,
-                "Country": p[2] or "Unknown",
-
-                "Longitude": lon,
-                "Latitude": lat,
-
-                "Altitude (m)": altitude,
-
-                "Altitude (ft)": (
-                    round(altitude * 3.28084)
-                    if altitude is not None else None
-                ),
-
-                "Geometric Altitude (m)": geo_altitude,
-
-                "Speed (km/h)": (
-                    round(velocity * 3.6)
-                    if velocity is not None else None
-                ),
-
-                "Speed (knots)": (
-                    round(velocity * 1.94384)
-                    if velocity is not None else None
-                ),
-
-                "Heading": heading,
-                "Vertical Rate (m/s)": vertical_rate,
-
-                "Squawk": p[14] or "N/A",
-
-                "On Ground": bool(p[8]),
-
-                "Last Contact": p[4],
-
-                "Position Time": p[3],
-
-                "Position Source": p[16]
-            })
-
-        return pd.DataFrame(records), None
-
-    except Exception as e:
-        return pd.DataFrame(), str(e)
+        return datetime.fromtimestamp(
+            timestamp, timezone.utc
+        ).strftime("%Y-%m-%d %H:%M:%S UTC")
+    except (ValueError, TypeError, OSError):
+        return "Unavailable"
 
 
-# =====================================
-# HEADER
-# =====================================
+def convert_aircraft(states):
+    columns = [
+        "ICAO24",
+        "Callsign",
+        "Country",
+        "Time Position",
+        "Last Contact",
+        "Longitude",
+        "Latitude",
+        "Altitude (m)",
+        "On Ground",
+        "Speed (m/s)",
+        "Heading",
+        "Vertical Rate",
+        "Sensors",
+        "Geometric Altitude (m)",
+        "Squawk",
+        "SPI",
+        "Position Source",
+        "Category"
+    ]
 
-st.markdown("""
-<div class="hero">
-    <h1>✈ PLAN RADAR X</h1>
-    <p>WORLDWIDE AIRCRAFT TRACKING SYSTEM</p>
-    <p>Flight Search • Live Map • Aircraft Details</p>
-</div>
-""", unsafe_allow_html=True)
+    records = []
+
+    if not states:
+        return pd.DataFrame(columns=columns)
+
+    for row in states:
+        if not row:
+            continue
+
+        longitude = safe_value(row, 5)
+        latitude = safe_value(row, 6)
+
+        # Only show aircraft with a known map position.
+        if longitude is None or latitude is None:
+            continue
+
+        callsign = safe_value(row, 1, "")
+        callsign = str(callsign).strip() if callsign else ""
+
+        records.append({
+            "ICAO24": safe_value(row, 0, ""),
+            "Callsign": callsign,
+            "Country": safe_value(row, 2, "Unknown"),
+            "Time Position": safe_value(row, 3),
+            "Last Contact": safe_value(row, 4),
+            "Longitude": longitude,
+            "Latitude": latitude,
+            "Altitude (m)": safe_value(row, 7),
+            "On Ground": safe_value(row, 8),
+            "Speed (m/s)": safe_value(row, 9),
+            "Heading": safe_value(row, 10),
+            "Vertical Rate": safe_value(row, 11),
+            "Sensors": safe_value(row, 12),
+            "Geometric Altitude (m)": safe_value(row, 13),
+            "Squawk": safe_value(row, 14),
+            "SPI": safe_value(row, 15),
+            "Position Source": safe_value(row, 16),
+            "Category": safe_value(row, 17)
+        })
+
+    return pd.DataFrame(records, columns=columns)
 
 
-# =====================================
+# ==========================================
+# OPENSKY API WITH RETRIES
+# ==========================================
+
+def fetch_opensky():
+    """
+    Attempts to retrieve worldwide aircraft data.
+    Retries after temporary connection errors.
+    """
+
+    headers = {
+        "User-Agent": "PLAN-RADAR-X/1.0"
+    }
+
+    last_error = None
+
+    for attempt in range(1, 4):
+        try:
+            response = requests.get(
+                API_URL,
+                headers=headers,
+                timeout=(6, 12)
+            )
+
+            if response.status_code == 429:
+                raise requests.exceptions.HTTPError(
+                    "OpenSky API rate limit reached (429)."
+                )
+
+            response.raise_for_status()
+
+            result = response.json()
+            states = result.get("states") or []
+
+            dataframe = convert_aircraft(states)
+
+            return {
+                "data": dataframe,
+                "time": datetime.now(timezone.utc),
+                "error": None
+            }
+
+        except requests.exceptions.Timeout:
+            last_error = "OpenSky connection timed out."
+
+        except requests.exceptions.ConnectionError:
+            last_error = "Could not connect to OpenSky."
+
+        except requests.exceptions.HTTPError as error:
+            last_error = f"OpenSky HTTP error: {error}"
+
+            # Do not repeatedly retry rate-limit or other HTTP errors.
+            break
+
+        except (requests.exceptions.RequestException, ValueError) as error:
+            last_error = str(error)
+
+        if attempt < 3:
+            time.sleep(attempt)
+
+    return {
+        "data": None,
+        "time": None,
+        "error": last_error or "Unknown API error"
+    }
+
+
+# ==========================================
+# SESSION STATE
+# ==========================================
+
+if "last_flight_data" not in st.session_state:
+    st.session_state.last_flight_data = None
+
+if "last_fetch_time" not in st.session_state:
+    st.session_state.last_fetch_time = None
+
+if "flight_query" not in st.session_state:
+    st.session_state.flight_query = ""
+
+if "api_error" not in st.session_state:
+    st.session_state.api_error = None
+
+
+# ==========================================
 # SIDEBAR
-# =====================================
+# ==========================================
 
-st.sidebar.title("✈ PLAN RADAR X")
+st.sidebar.markdown("## ✈️ PLAN RADAR X")
+st.sidebar.caption("WORLDWIDE AIRCRAFT TRACKING")
 
 page = st.sidebar.radio(
     "NAVIGATION",
@@ -223,482 +283,488 @@ page = st.sidebar.radio(
     ]
 )
 
-st.sidebar.markdown("---")
-
-refresh = st.sidebar.selectbox(
-    "Refresh Interval",
-    [30, 60, 120, 300],
-    index=1
-)
+st.sidebar.divider()
 
 auto_refresh = st.sidebar.checkbox(
-    "Auto Refresh",
+    "Enable automatic refresh",
     value=True
 )
 
-if st.sidebar.button("Refresh Now"):
-    get_aircraft_data.clear()
-    st.rerun()
-
-st.sidebar.markdown("---")
-st.sidebar.caption("DATA: OPENSKY NETWORK")
-st.sidebar.caption("Created by Apan2026")
-
-
-if auto_refresh and REFRESH_AVAILABLE:
+if auto_refresh and AUTO_REFRESH_AVAILABLE:
     st_autorefresh(
-        interval=refresh * 1000,
-        key="refresh"
+        interval=60000,
+        limit=None,
+        key="plan_radar_refresh"
     )
 
+st.sidebar.caption("Refresh interval: 60 seconds")
 
-# =====================================
-# LOAD DATA
-# =====================================
+if st.sidebar.button("🔄 Refresh Aircraft Data", use_container_width=True):
+    st.session_state.force_refresh = True
+else:
+    st.session_state.force_refresh = False
 
-with st.spinner("Loading worldwide aircraft data..."):
-    df, error = get_aircraft_data()
 
-if error:
-    st.error(f"Aircraft data unavailable: {error}")
+# ==========================================
+# HEADER
+# ==========================================
+
+st.markdown(
+    '<div class="main-title">✈ PLAN RADAR X</div>',
+    unsafe_allow_html=True
+)
+
+st.markdown(
+    '<div class="subtitle">GLOBAL LIVE AIRCRAFT TRACKING SYSTEM</div>',
+    unsafe_allow_html=True
+)
+
+st.divider()
+
+
+# ==========================================
+# FETCH OR REUSE DATA
+# ==========================================
+
+# A manual refresh always tries the API again.
+# Otherwise, reuse the last successful data for 30 seconds.
+
+should_fetch = (
+    st.session_state.last_flight_data is None
+    or st.session_state.force_refresh
+)
+
+if st.session_state.last_fetch_time is not None:
+    age = (
+        datetime.now(timezone.utc)
+        - st.session_state.last_fetch_time
+    ).total_seconds()
+
+    if age >= 30:
+        should_fetch = True
+
+if should_fetch:
+    with st.spinner("Connecting to OpenSky aircraft network..."):
+        result = fetch_opensky()
+
+    if result["data"] is not None:
+        st.session_state.last_flight_data = result["data"]
+        st.session_state.last_fetch_time = result["time"]
+        st.session_state.api_error = None
+    else:
+        st.session_state.api_error = result["error"]
+
+
+# ==========================================
+# LOAD CURRENT OR LAST AVAILABLE DATA
+# ==========================================
+
+aircraft_df = st.session_state.last_flight_data
+
+if aircraft_df is None:
+    st.error(
+        "Aircraft data is currently unavailable. "
+        "The application could not connect to OpenSky."
+    )
+
+    st.warning(
+        st.session_state.api_error
+        or "Please try refreshing the aircraft data."
+    )
+
+    st.info(
+        "Check again later. OpenSky's public aircraft feed "
+        "may be temporarily unavailable."
+    )
+
     st.stop()
 
-if df.empty:
-    st.warning("No aircraft with available position data.")
-    st.stop()
+if st.session_state.api_error:
+    st.warning(
+        "Live update failed. Showing the last successfully "
+        "received aircraft data instead."
+    )
 
+    st.caption(
+        f"Connection message: {st.session_state.api_error}"
+    )
 
-# =====================================
-# SEARCH HELPERS
-# =====================================
+# Make a working copy.
+df = aircraft_df.copy()
 
-def normalize(value):
-    return "".join(
-        char for char in str(value).upper()
-        if char.isalnum()
+# Derived display columns.
+df["Altitude (ft)"] = (
+    pd.to_numeric(df["Altitude (m)"], errors="coerce") * 3.28084
+)
+
+df["Speed (km/h)"] = (
+    pd.to_numeric(df["Speed (m/s)"], errors="coerce") * 3.6
+)
+
+df["Speed (knots)"] = (
+    pd.to_numeric(df["Speed (m/s)"], errors="coerce") * 1.94384
+)
+
+df["Last Contact UTC"] = df["Last Contact"].apply(utc_time)
+df["Position Time UTC"] = df["Time Position"].apply(utc_time)
+
+fetch_time = st.session_state.last_fetch_time
+
+if fetch_time:
+    st.caption(
+        "Last successful data update: "
+        + fetch_time.strftime("%Y-%m-%d %H:%M:%S UTC")
     )
 
 
-def search_aircraft(query):
+# ==========================================
+# DASHBOARD METRICS
+# ==========================================
 
-    q = normalize(query)
+total_aircraft = len(df)
 
-    if not q:
-        return pd.DataFrame()
+airborne = 0
+if total_aircraft:
+    airborne = int((df["On Ground"] == False).sum())
 
-    possible = [q]
+countries = int(df["Country"].nunique())
 
-    # Biman IATA example BG355 -> ICAO callsign BBC355
-    if q.startswith("BG") and len(q) > 2:
-        possible.append("BBC" + q[2:])
+col1, col2, col3 = st.columns(3)
 
-    callsigns = df["Callsign"].apply(normalize)
-    icao_codes = df["ICAO24"].apply(normalize)
+col1.metric("AIRCRAFT WITH POSITIONS", f"{total_aircraft:,}")
+col2.metric("AIRBORNE AIRCRAFT", f"{airborne:,}")
+col3.metric("COUNTRIES", f"{countries:,}")
 
-    mask = (
-        callsigns.isin(possible)
-        | icao_codes.eq(q)
-    )
-
-    # If exact match is unavailable, allow partial callsign match
-    if not mask.any():
-        mask = (
-            callsigns.str.contains(q, regex=False)
-            | icao_codes.str.contains(q, regex=False)
-        )
-
-        if q.startswith("BG") and len(q) > 2:
-            alternative = "BBC" + q[2:]
-            mask = (
-                mask
-                | callsigns.str.contains(
-                    alternative,
-                    regex=False
-                )
-            )
-
-    return df[mask].copy()
+st.divider()
 
 
-# =====================================
+# ==========================================
 # MAP FUNCTION
-# =====================================
+# ==========================================
 
-def show_map(data, title="Aircraft Location"):
+def show_aircraft_map(map_df, height=650):
 
-    if data.empty:
-        st.warning("No aircraft location available.")
+    if map_df.empty:
+        st.info("No aircraft with map positions found.")
         return
 
-    map_data = data.copy()
-
-    map_data["Status"] = map_data["On Ground"].map({
-        True: "On Ground",
-        False: "Airborne"
-    })
-
-    map_data["Altitude"] = map_data["Altitude (ft)"].apply(
-        lambda x: f"{x:,} ft" if pd.notna(x) else "Unknown"
-    )
-
-    map_data["Speed"] = map_data["Speed (knots)"].apply(
-        lambda x: f"{x} knots" if pd.notna(x) else "Unknown"
-    )
-
-    first = map_data.iloc[0]
+    if len(map_df) > 5000:
+        map_df = map_df.sample(5000, random_state=42)
 
     fig = px.scatter_map(
-        map_data,
+        map_df,
         lat="Latitude",
         lon="Longitude",
-        color="Status",
         hover_name="Callsign",
-        hover_data=[
-            "ICAO24",
-            "Country",
-            "Altitude",
-            "Speed",
-            "Heading",
-            "Status"
-        ],
-        color_discrete_map={
-            "Airborne": "#00d9ff",
-            "On Ground": "#ffb84d"
+        hover_data={
+            "ICAO24": True,
+            "Country": True,
+            "Altitude (ft)": ":.0f",
+            "Speed (knots)": ":.1f",
+            "Heading": True,
+            "Latitude": False,
+            "Longitude": False
         },
-        zoom=5 if len(map_data) == 1 else 1,
-        height=620
-    )
-
-    fig.update_layout(
-        title=title,
-        map=dict(
-            style="open-street-map",
-            center={
-                "lat": float(first["Latitude"]),
-                "lon": float(first["Longitude"])
-            },
-            zoom=5 if len(map_data) == 1 else 1
-        ),
-        paper_bgcolor="#07111f",
-        plot_bgcolor="#07111f",
-        font_color="white",
-        margin=dict(l=0, r=0, t=50, b=0)
+        zoom=1,
+        height=height
     )
 
     fig.update_traces(
-        marker=dict(size=12, opacity=0.9)
+        marker={
+            "size": 7,
+            "color": "#29c7ff",
+            "opacity": 0.85
+        }
+    )
+
+    fig.update_layout(
+        map_style="open-street-map",
+        paper_bgcolor="#07111f",
+        plot_bgcolor="#07111f",
+        font_color="#eaf2ff",
+        margin=dict(l=0, r=0, t=0, b=0)
     )
 
     st.plotly_chart(
         fig,
-        use_container_width=True,
-        config={
-            "scrollZoom": True,
-            "displaylogo": False
-        }
+        use_container_width=True
     )
 
 
-# =====================================
-# FLIGHT DETAILS
-# =====================================
+# ==========================================
+# AIRCRAFT DETAILS
+# ==========================================
 
-def show_details(plane):
+def show_details(row):
 
-    st.markdown(
-        '<div class="section-title">✈ FLIGHT INFORMATION</div>',
-        unsafe_allow_html=True
+    st.subheader("✈ Aircraft Information")
+
+    def display_value(value, suffix=""):
+        if pd.isna(value):
+            return "Unavailable"
+
+        if isinstance(value, float):
+            return f"{value:.2f}{suffix}"
+
+        return f"{value}{suffix}"
+
+    details = [
+        ("ICAO24", row.get("ICAO24")),
+        ("Callsign", row.get("Callsign")),
+        ("Origin Country", row.get("Country")),
+        ("Longitude", display_value(row.get("Longitude"))),
+        ("Latitude", display_value(row.get("Latitude"))),
+        ("Altitude", display_value(row.get("Altitude (ft)"), " ft")),
+        ("Geometric Altitude", display_value(
+            pd.to_numeric(
+                row.get("Geometric Altitude (m)"),
+                errors="coerce"
+            ) * 3.28084,
+            " ft"
+        )),
+        ("Ground Speed", display_value(row.get("Speed (knots)"), " knots")),
+        ("Speed", display_value(row.get("Speed (km/h)"), " km/h")),
+        ("Heading", display_value(row.get("Heading"), "°")),
+        ("Vertical Rate", display_value(row.get("Vertical Rate"), " m/s")),
+        ("Squawk", display_value(row.get("Squawk"))),
+        ("On Ground", display_value(row.get("On Ground"))),
+        ("Position Time", row.get("Position Time UTC", "Unavailable")),
+        ("Last Contact", row.get("Last Contact UTC", "Unavailable")),
+        ("Position Source", display_value(row.get("Position Source"))),
+        ("Category", display_value(row.get("Category")))
+    ]
+
+    left, right = st.columns(2)
+
+    for index, (label, value) in enumerate(details):
+        target = left if index % 2 == 0 else right
+
+        with target:
+            st.markdown(
+                f"""
+                <div class="info-card">
+                    <div class="info-label">{label}</div>
+                    <div class="info-value">{value}</div>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+
+
+# ==========================================
+# FLIGHT SEARCH
+# ==========================================
+
+if page == "Flight Search":
+
+    st.subheader("🔎 Search Aircraft")
+
+    st.write(
+        "Search using a flight callsign or ICAO24 aircraft address."
     )
 
-    st.subheader(
-        f'Flight: {plane["Callsign"]}'
+    with st.form("flight_search_form"):
+        query = st.text_input(
+            "Flight number / Callsign / ICAO24",
+            value=st.session_state.flight_query,
+            placeholder="Example: BBC355 or ICAO24 address"
+        )
+
+        search_button = st.form_submit_button(
+            "SEARCH FLIGHT",
+            use_container_width=True
+        )
+
+    if search_button:
+        st.session_state.flight_query = query.strip()
+
+    search_query = st.session_state.flight_query.strip().upper()
+
+    if search_query:
+
+        search_terms = [search_query]
+
+        # Biman Bangladesh IATA code BG -> ICAO callsign prefix BBC.
+        if search_query.startswith("BG") and len(search_query) > 2:
+            search_terms.append("BBC" + search_query[2:])
+
+        matches = df[
+            df["Callsign"].fillna("").str.upper().apply(
+                lambda value: any(
+                    term in value for term in search_terms
+                )
+            )
+            |
+            df["ICAO24"].fillna("").str.upper().str.contains(
+                search_query,
+                regex=False
+            )
+        ].copy()
+
+        if not matches.empty:
+
+            st.success(
+                f"Found {len(matches)} matching aircraft."
+            )
+
+            show_aircraft_map(matches, height=500)
+
+            if len(matches) > 1:
+
+                options = matches.index.tolist()
+
+                selected_index = st.selectbox(
+                    "Select an aircraft",
+                    options,
+                    format_func=lambda index: (
+                        str(matches.loc[index, "Callsign"])
+                        + " | "
+                        + str(matches.loc[index, "ICAO24"])
+                    )
+                )
+
+                selected_aircraft = matches.loc[selected_index]
+
+            else:
+                selected_aircraft = matches.iloc[0]
+
+            show_details(selected_aircraft)
+
+        else:
+            st.warning(
+                "No matching aircraft found in the currently "
+                "available OpenSky data."
+            )
+
+            st.info(
+                "The aircraft may not currently be transmitting "
+                "a visible position, or its callsign may be different."
+            )
+
+            st.caption(
+                "Try searching again later or check the callsign."
+            )
+
+    else:
+        st.info(
+            "Enter a flight number or callsign above to search."
+        )
+
+
+# ==========================================
+# WORLDWIDE MAP
+# ==========================================
+
+elif page == "Worldwide Map":
+
+    st.subheader("🌍 Worldwide Aircraft Radar")
+
+    st.write(
+        "Aircraft positions currently available from the OpenSky network."
     )
 
-    a, b, c = st.columns(3)
+    show_aircraft_map(df, height=700)
 
-    a.metric("Callsign", plane["Callsign"])
-    b.metric("ICAO24", plane["ICAO24"])
-    c.metric("Country", plane["Country"])
-
-    a, b, c = st.columns(3)
-
-    altitude = plane["Altitude (ft)"]
-    speed = plane["Speed (knots)"]
-    heading = plane["Heading"]
-
-    a.metric(
-        "Altitude",
-        f"{altitude:,} ft" if pd.notna(altitude) else "Unknown"
+    st.caption(
+        "Map positions depend on available ADS-B coverage. "
+        "This is not a primary military or airport radar."
     )
 
-    b.metric(
-        "Speed",
-        f"{speed} knots" if pd.notna(speed) else "Unknown"
+
+# ==========================================
+# AIRCRAFT DATABASE
+# ==========================================
+
+elif page == "Aircraft Database":
+
+    st.subheader("📡 Aircraft Database")
+
+    search_database = st.text_input(
+        "Filter by callsign, ICAO24 or country",
+        placeholder="Search aircraft..."
     )
 
-    c.metric(
+    database = df.copy()
+
+    if search_database.strip():
+
+        term = search_database.strip().upper()
+
+        database = database[
+            database["Callsign"].fillna("").str.upper().str.contains(
+                term, regex=False
+            )
+            |
+            database["ICAO24"].fillna("").str.upper().str.contains(
+                term, regex=False
+            )
+            |
+            database["Country"].fillna("").str.upper().str.contains(
+                term, regex=False
+            )
+        ]
+
+    visible_columns = [
+        "Callsign",
+        "ICAO24",
+        "Country",
+        "Latitude",
+        "Longitude",
+        "Altitude (ft)",
+        "Speed (knots)",
         "Heading",
-        f"{heading}°" if pd.notna(heading) else "Unknown"
-    )
-
-    a, b, c = st.columns(3)
-
-    a.metric(
-        "Flight Status",
-        "On Ground" if plane["On Ground"] else "Airborne"
-    )
-
-    b.metric(
-        "Squawk",
-        plane["Squawk"]
-    )
-
-    vr = plane["Vertical Rate (m/s)"]
-
-    c.metric(
-        "Vertical Rate",
-        f"{vr} m/s" if pd.notna(vr) else "Unknown"
-    )
-
-    st.markdown("### 📍 Aircraft Location")
-
-    st.code(
-        f'Latitude: {plane["Latitude"]}\n'
-        f'Longitude: {plane["Longitude"]}'
-    )
-
-    st.markdown("### 📡 Additional Information")
-
-    details = {
-        "Geometric Altitude (m)": plane["Geometric Altitude (m)"],
-        "Barometric Altitude (m)": plane["Altitude (m)"],
-        "Position Source": plane["Position Source"],
-        "Last Contact (Unix)": plane["Last Contact"],
-        "Position Time (Unix)": plane["Position Time"]
-    }
+        "On Ground",
+        "Squawk"
+    ]
 
     st.dataframe(
-        pd.DataFrame(
-            list(details.items()),
-            columns=["Information", "Value"]
-        ),
+        database[visible_columns],
         use_container_width=True,
         hide_index=True
     )
 
     st.caption(
-        "Only fields supplied by the data provider can be displayed. "
-        "Departure, destination and aircraft model are not included "
-        "in this OpenSky response."
+        f"Showing {len(database):,} aircraft records with known positions."
     )
 
 
-# =====================================
-# PAGE 1: FLIGHT SEARCH
-# =====================================
-
-if page == "Flight Search":
-
-    st.markdown(
-        '<div class="section-title">🔎 SEARCH YOUR FLIGHT</div>',
-        unsafe_allow_html=True
-    )
-
-    with st.form("flight_search_form"):
-
-        query = st.text_input(
-            "Enter Flight Number / Callsign / ICAO24",
-            placeholder="Example: BBC355 or BG355"
-        )
-
-        submitted = st.form_submit_button(
-            "🔍 SEARCH FLIGHT",
-            use_container_width=True
-        )
-
-    if submitted:
-
-        if query.strip():
-
-            st.session_state["flight_query"] = query.strip()
-
-        else:
-
-            st.session_state["flight_query"] = ""
-
-    if "flight_query" in st.session_state:
-
-        current_query = st.session_state["flight_query"]
-
-        if current_query:
-
-            results = search_aircraft(current_query)
-
-            if not results.empty:
-
-                st.success(
-                    f"Found {len(results)} matching aircraft."
-                )
-
-                for index, (_, plane) in enumerate(
-                    results.iterrows()
-                ):
-
-                    st.markdown("---")
-
-                    st.markdown(
-                        f'### ✈ {plane["Callsign"]}'
-                    )
-
-                    # Map opens immediately after search
-                    show_map(
-                        pd.DataFrame([plane]),
-                        f'Flight Location - {plane["Callsign"]}'
-                    )
-
-                    show_details(plane)
-
-            else:
-
-                st.error(
-                    "No matching aircraft found in the available data."
-                )
-
-                st.info(
-                    "The aircraft may not be transmitting visible ADS-B "
-                    "position data right now. Try again later or search "
-                    "using its ICAO callsigns."
-                )
-
-                st.caption(
-                    "For Biman Bangladesh, try BBC355 or BG355. "
-                    "These are search examples, not guaranteed live flights."
-                )
-
-
-# =====================================
-# PAGE 2: WORLDWIDE MAP
-# =====================================
-
-elif page == "Worldwide Map":
-
-    st.markdown(
-        '<div class="section-title">🌍 WORLDWIDE AIRCRAFT MAP</div>',
-        unsafe_allow_html=True
-    )
-
-    show_map(
-        df,
-        "PLAN RADAR X - Worldwide Aircraft"
-    )
-
-    st.dataframe(
-        df,
-        use_container_width=True,
-        hide_index=True
-    )
-
-
-# =====================================
-# PAGE 3: DATABASE
-# =====================================
-
-elif page == "Aircraft Database":
-
-    st.markdown(
-        '<div class="section-title">📡 AIRCRAFT DATABASE</div>',
-        unsafe_allow_html=True
-    )
-
-    countries = [
-        "All Countries"
-    ] + sorted(
-        df["Country"].dropna().unique().tolist()
-    )
-
-    selected = st.selectbox(
-        "Select Country",
-        countries
-    )
-
-    filtered = df.copy()
-
-    if selected != "All Countries":
-        filtered = filtered[
-            filtered["Country"] == selected
-        ]
-
-    status = st.selectbox(
-        "Aircraft Status",
-        ["All", "Airborne", "On Ground"]
-    )
-
-    if status == "Airborne":
-        filtered = filtered[~filtered["On Ground"]]
-
-    elif status == "On Ground":
-        filtered = filtered[filtered["On Ground"]]
-
-    st.write(f"Aircraft found: {len(filtered)}")
-
-    show_map(filtered, "Aircraft Database Map")
-
-    st.dataframe(
-        filtered,
-        use_container_width=True,
-        hide_index=True
-    )
-
-    st.download_button(
-        "Download CSV",
-        filtered.to_csv(index=False).encode("utf-8"),
-        "aircraft_database.csv",
-        "text/csv"
-    )
-
-
-# =====================================
-# PAGE 4: ABOUT
-# =====================================
+# ==========================================
+# ABOUT
+# ==========================================
 
 elif page == "About":
 
-    st.title("About PLAN RADAR X")
+    st.subheader("About PLAN RADAR X")
 
-    st.write("""
-    PLAN RADAR X is a worldwide aircraft tracking application.
+    st.markdown("""
+    **PLAN RADAR X** is a worldwide aircraft tracking dashboard.
 
-    DATA SOURCE:
-    OpenSky Network ADS-B API.
+    ### Features
 
-    FEATURES:
-    - Flight search
-    - Individual aircraft map
-    - Aircraft details
     - Worldwide aircraft map
+    - Flight callsign search
+    - ICAO24 search
+    - Aircraft information
     - Aircraft database
-    - Country filter
-    - CSV export
+    - Automatic refresh
+    - API retry and timeout handling
+    - Last successful data fallback
 
-    LIMITATIONS:
-    This is not a physical primary radar.
-    Aircraft visibility depends on ADS-B coverage and API data.
-    Departure airport, destination airport, aircraft model and
-    full flight history are not supplied by this API response.
+    ### Data Source
+
+    Aircraft state information is retrieved from the
+    OpenSky Network public API.
+
+    ### Important Limitations
+
+    - Aircraft coverage depends on available ADS-B receivers.
+    - Some aircraft may not appear.
+    - Departure and destination information is not supplied
+      by the states/all endpoint.
+    - Aircraft model and historical route information may
+      not be available.
+    - This application is not a primary radar system.
+    - Public API access may have rate limits or temporary outages.
+
+    **PLAN RADAR X — Global Aircraft Tracking**
     """)
-
-    st.markdown(
-        "[OpenSky Network](https://opensky-network.org/)"
-    )
-
-
-# =====================================
-# FOOTER
-# =====================================
-
-st.markdown("---")
-
-st.caption(
-    "PLAN RADAR X | Created by Apan2026 | "
-    + datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-)
