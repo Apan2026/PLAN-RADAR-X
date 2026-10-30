@@ -1,12 +1,12 @@
 
 import streamlit as st
+import streamlit.components.v1 as components
 import requests
 import pandas as pd
-import plotly.graph_objects as go
 import plotly.express as px
 import math
-import time
 from datetime import datetime, timezone
+from html import escape
 
 # ==========================================
 # CONFIG
@@ -24,7 +24,6 @@ API = "https://api.adsb.lol/v2"
 DEFAULT_LAT = 23.8103
 DEFAULT_LON = 90.4125
 DEFAULT_RADIUS = 250
-
 
 # ==========================================
 # DESIGN
@@ -77,7 +76,6 @@ div[data-testid="stMetric"] {
 </style>
 """, unsafe_allow_html=True)
 
-
 # ==========================================
 # SESSION STATE
 # ==========================================
@@ -88,18 +86,15 @@ defaults = {
     "last_update": None,
     "api_error": None,
     "search_results": [],
-    "selected_icao": None,
-    "scan_center": (DEFAULT_LAT, DEFAULT_LON),
-    "scan_radius": DEFAULT_RADIUS
+    "selected_icao": None
 }
 
 for key, value in defaults.items():
     if key not in st.session_state:
         st.session_state[key] = value
 
-
 # ==========================================
-# API
+# API REQUEST
 # ==========================================
 
 def api_request(endpoint):
@@ -128,7 +123,6 @@ def api_request(endpoint):
     except (requests.exceptions.RequestException, ValueError) as e:
         return None, str(e)
 
-
 # ==========================================
 # NORMALIZE AIRCRAFT
 # ==========================================
@@ -143,6 +137,7 @@ def normalize_aircraft(items):
 
             if not (-90 <= lat <= 90):
                 continue
+
             if not (-180 <= lon <= 180):
                 continue
 
@@ -170,9 +165,8 @@ def normalize_aircraft(items):
 
     return result
 
-
 # ==========================================
-# FETCH AREA
+# FETCH AIRCRAFT
 # ==========================================
 
 def fetch_area(lat, lon, radius):
@@ -190,7 +184,6 @@ def fetch_area(lat, lon, radius):
     total = data.get("total", len(raw))
 
     return normalize_aircraft(raw), total, None
-
 
 # ==========================================
 # FLIGHT SEARCH
@@ -226,7 +219,6 @@ def search_flight(query):
             results = normalize_aircraft(data.get("ac", []))
 
     return results, None
-
 
 # ==========================================
 # DISTANCE AND BEARING
@@ -264,7 +256,6 @@ def distance_bearing(lat1, lon1, lat2, lon2):
 
     return distance_km / 1.852, bearing
 
-
 # ==========================================
 # PREPARE TARGETS
 # ==========================================
@@ -288,191 +279,318 @@ def prepare_targets(aircraft, center_lat, center_lon):
 
     return targets
 
-
 # ==========================================
-# RADAR SWEEP SECTOR
-# ==========================================
-
-def make_sweep_path(angle_degrees, width_degrees=24):
-    """
-    Create a narrow triangular radar sweep sector.
-    The angle changes over time to simulate rotation.
-    """
-
-    points = [(0, 0)]
-
-    steps = 18
-
-    for i in range(steps + 1):
-        angle = (
-            angle_degrees - width_degrees
-            + (width_degrees * i / steps)
-        )
-
-        rad = math.radians(angle)
-
-        x = math.sin(rad)
-        y = math.cos(rad)
-
-        points.append((x, y))
-
-    points.append((0, 0))
-
-    path = "M " + " L ".join(
-        f"{x:.4f},{y:.4f}" for x, y in points
-    ) + " Z"
-
-    return path
-
-
-# ==========================================
-# RADAR CHART
+# SMOOTH CSS RADAR
 # ==========================================
 
-def create_radar_chart(targets, radius, selected_icao):
-    fig = go.Figure()
+def create_radar_html(targets, radius, selected_icao):
 
-    # Radar circles
-    for percentage in [0.2, 0.4, 0.6, 0.8, 1.0]:
-        fig.add_shape(
-            type="circle",
-            x0=-percentage,
-            y0=-percentage,
-            x1=percentage,
-            y1=percentage,
-            line=dict(color="#174a35", width=1.3)
-        )
+    dots = []
 
-    # Cross lines
-    fig.add_shape(
-        type="line",
-        x0=-1, y0=0,
-        x1=1, y1=0,
-        line=dict(color="#174a35", width=1)
-    )
-
-    fig.add_shape(
-        type="line",
-        x0=0, y0=-1,
-        x1=0, y1=1,
-        line=dict(color="#174a35", width=1)
-    )
-
-    # Rotating sweep
-    angle = (time.time() * 55) % 360
-
-    fig.add_shape(
-        type="path",
-        path=make_sweep_path(angle),
-        fillcolor="rgba(30,255,130,0.18)",
-        line=dict(color="rgba(30,255,130,0.7)", width=1),
-        layer="below"
-    )
-
-    # Aircraft positions
-    visible = [
-        p for p in targets
-        if p["Distance (NM)"] <= radius
-    ]
-
-    xs, ys = [], []
-    hover, customdata = [], []
-    colors, sizes = [], []
-
-    for plane in visible:
+    for plane in targets:
         distance = plane["Distance (NM)"]
         bearing = plane["Direction (°)"]
 
-        rad = math.radians(bearing)
-        scale = distance / radius
+        if radius <= 0:
+            continue
 
-        xs.append(math.sin(rad) * scale)
-        ys.append(math.cos(rad) * scale)
+        angle = math.radians(bearing)
+        scale = min(distance / radius, 1.0)
 
-        callsign = plane["Callsign"] or plane["ICAO"] or "UNKNOWN"
+        x = 50 + math.sin(angle) * scale * 45
+        y = 50 - math.cos(angle) * scale * 45
 
-        hover.append(
-            f"<b>{callsign}</b><br>"
-            f"ICAO: {plane['ICAO']}<br>"
-            f"Aircraft: {plane['Aircraft Type']}<br>"
-            f"Altitude: {plane['Altitude (ft)']}<br>"
-            f"Speed: {plane['Ground Speed (knots)']} knots<br>"
-            f"Distance: {distance} NM<br>"
-            f"Direction: {bearing}°<br>"
-            f"<b>Click to select</b>"
+        callsign = (
+            plane["Callsign"]
+            or plane["ICAO"]
+            or "UNKNOWN"
         )
 
-        customdata.append(plane["ICAO"])
-
-        if plane["ICAO"] == selected_icao:
-            colors.append("#ffcf48")
-            sizes.append(16)
-        else:
-            colors.append("#ffffff")
-            sizes.append(10)
-
-    fig.add_trace(
-        go.Scatter(
-            x=xs,
-            y=ys,
-            mode="markers",
-            marker=dict(
-                size=sizes,
-                color=colors,
-                line=dict(color="#39ff91", width=1.5)
-            ),
-            text=hover,
-            customdata=customdata,
-            hovertemplate="%{text}<extra></extra>",
-            name="Aircraft"
+        safe_title = escape(
+            f"{callsign} | ICAO: {plane['ICAO']} | {distance} NM",
+            quote=True
         )
-    )
 
-    # Radar center
-    fig.add_trace(
-        go.Scatter(
-            x=[0],
-            y=[0],
-            mode="markers",
-            marker=dict(
-                size=12,
-                color="white",
-                line=dict(color="#39ff91", width=2)
-            ),
-            hovertemplate="RADAR CENTER<extra></extra>",
-            name="Radar Center"
+        selected = plane["ICAO"] == selected_icao
+
+        color = "#ffcf48" if selected else "#ffffff"
+        size = "13px" if selected else "9px"
+
+        dots.append(
+            f'<div class="aircraft-dot" title="{safe_title}" '
+            f'style="left:{x:.3f}%;top:{y:.3f}%;'
+            f'background:{color};width:{size};height:{size};">'
+            f'</div>'
         )
-    )
 
-    fig.update_layout(
-        height=650,
-        paper_bgcolor="#050b10",
-        plot_bgcolor="#06130e",
-        font=dict(color="#52ff9b"),
-        margin=dict(l=20, r=20, t=20, b=20),
-        showlegend=False,
-        clickmode="event+select",
-        dragmode=False,
-        xaxis=dict(
-            range=[-1.08, 1.08],
-            visible=False,
-            scaleanchor="y"
+    dots_html = "\n".join(dots)
+
+    return f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+    <meta name="viewport" content="width=device-width">
+    <style>
+
+    * {{
+        box-sizing: border-box;
+    }}
+
+    html, body {{
+        margin: 0;
+        padding: 0;
+        background: #050b10;
+        overflow: hidden;
+        font-family: Arial, sans-serif;
+    }}
+
+    .radar-stage {{
+        width: 100%;
+        height: 640px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background:
+        radial-gradient(
+            ellipse at center,
+            #0b2119 0%,
+            #06130e 58%,
+            #050b10 100%
+        );
+    }}
+
+    .radar {{
+        width: min(88vw, 610px);
+        aspect-ratio: 1 / 1;
+        position: relative;
+        overflow: hidden;
+        border-radius: 50%;
+        border: 2px solid #2b8055;
+
+        background:
+        radial-gradient(
+            circle,
+            transparent 19.5%,
+            rgba(31,112,72,.65) 19.8%,
+            transparent 20.2%
         ),
-        yaxis=dict(
-            range=[-1.08, 1.08],
-            visible=False
-        )
-    )
+        radial-gradient(
+            circle,
+            transparent 39.5%,
+            rgba(31,112,72,.65) 39.8%,
+            transparent 40.2%
+        ),
+        radial-gradient(
+            circle,
+            transparent 59.5%,
+            rgba(31,112,72,.65) 59.8%,
+            transparent 60.2%
+        ),
+        radial-gradient(
+            circle,
+            transparent 79.5%,
+            rgba(31,112,72,.65) 79.8%,
+            transparent 80.2%
+        ),
+        radial-gradient(
+            circle,
+            transparent 99%,
+            #2b8055 99.5%,
+            transparent 100%
+        ),
+        radial-gradient(
+            circle at center,
+            #0b2418 0%,
+            #06140f 72%,
+            #04100c 100%
+        );
 
-    return fig
+        box-shadow:
+        0 0 22px rgba(27,255,130,.18),
+        inset 0 0 28px rgba(27,255,130,.10);
+    }}
 
+    .cross {{
+        position: absolute;
+        background: rgba(47,133,87,.55);
+    }}
+
+    .horizontal {{
+        width: 100%;
+        height: 1px;
+        left: 0;
+        top: 50%;
+    }}
+
+    .vertical {{
+        width: 1px;
+        height: 100%;
+        left: 50%;
+        top: 0;
+    }}
+
+    .sweep {{
+        position: absolute;
+        inset: 0;
+        border-radius: 50%;
+
+        background: conic-gradient(
+            from 0deg,
+            rgba(45,255,139,0.00) 0deg,
+            rgba(45,255,139,0.02) 8deg,
+            rgba(45,255,139,0.07) 19deg,
+            rgba(45,255,139,0.23) 28deg,
+            rgba(45,255,139,0.00) 35deg,
+            rgba(45,255,139,0.00) 360deg
+        );
+
+        animation: radar-spin 4s linear infinite;
+        transform-origin: center;
+        will-change: transform;
+        pointer-events: none;
+    }}
+
+    .sweep-line {{
+        position: absolute;
+        left: 50%;
+        top: 0;
+        width: 2px;
+        height: 50%;
+
+        background: linear-gradient(
+            to bottom,
+            rgba(90,255,160,.95),
+            rgba(90,255,160,.12)
+        );
+
+        transform-origin: bottom center;
+        animation: radar-spin 4s linear infinite;
+
+        box-shadow: 0 0 9px rgba(57,255,145,.8);
+        pointer-events: none;
+    }}
+
+    @keyframes radar-spin {{
+        from {{
+            transform: rotate(0deg);
+        }}
+        to {{
+            transform: rotate(360deg);
+        }}
+    }}
+
+    .aircraft-dot {{
+        position: absolute;
+        transform: translate(-50%, -50%);
+        border-radius: 50%;
+        border: 2px solid #39ff91;
+        box-shadow:
+            0 0 9px #39ff91,
+            0 0 17px rgba(57,255,145,.45);
+        z-index: 5;
+    }}
+
+    .center {{
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        width: 13px;
+        height: 13px;
+        transform: translate(-50%, -50%);
+        border-radius: 50%;
+        background: white;
+        border: 2px solid #39ff91;
+        box-shadow: 0 0 12px #39ff91;
+        z-index: 8;
+    }}
+
+    .radar-label {{
+        position: absolute;
+        color: rgba(103,255,170,.65);
+        font-size: 10px;
+        letter-spacing: 1px;
+        z-index: 2;
+    }}
+
+    .north {{
+        top: 8px;
+        left: 50%;
+        transform: translateX(-50%);
+    }}
+
+    .east {{
+        right: 9px;
+        top: 50%;
+        transform: translateY(-50%);
+    }}
+
+    .south {{
+        bottom: 8px;
+        left: 50%;
+        transform: translateX(-50%);
+    }}
+
+    .west {{
+        left: 9px;
+        top: 50%;
+        transform: translateY(-50%);
+    }}
+
+    .radar-footer {{
+        position: absolute;
+        bottom: 15px;
+        left: 50%;
+        transform: translateX(-50%);
+        color: #69c994;
+        font-size: 10px;
+        letter-spacing: 2px;
+        white-space: nowrap;
+        z-index: 10;
+    }}
+
+    </style>
+    </head>
+
+    <body>
+        <div class="radar-stage">
+            <div class="radar">
+
+                <div class="cross horizontal"></div>
+                <div class="cross vertical"></div>
+
+                <div class="radar-label north">N</div>
+                <div class="radar-label east">E</div>
+                <div class="radar-label south">S</div>
+                <div class="radar-label west">W</div>
+
+                <div class="sweep"></div>
+                <div class="sweep-line"></div>
+
+                {dots_html}
+
+                <div class="center"></div>
+
+                <div class="radar-footer">
+                    360° LIVE VISUAL SWEEP
+                </div>
+
+            </div>
+        </div>
+    </body>
+    </html>
+    """
 
 # ==========================================
-# AIRCRAFT INFORMATION
+# AIRCRAFT DETAILS
 # ==========================================
 
 def show_aircraft_details(plane):
-    callsign = plane["Callsign"] or plane["ICAO"] or "UNKNOWN"
+
+    callsign = (
+        plane["Callsign"]
+        or plane["ICAO"]
+        or "UNKNOWN"
+    )
 
     st.markdown("---")
     st.markdown(f"## ✈ {callsign}")
@@ -562,7 +680,6 @@ def show_aircraft_details(plane):
         "can be displayed. Missing fields may appear as N/A."
     )
 
-
 # ==========================================
 # HEADER
 # ==========================================
@@ -580,7 +697,6 @@ st.markdown(
 )
 
 st.divider()
-
 
 # ==========================================
 # SIDEBAR
@@ -635,13 +751,14 @@ refresh = st.sidebar.button(
     use_container_width=True
 )
 
-
 # ==========================================
 # FETCH DATA
 # ==========================================
 
 if refresh or st.session_state.last_update is None:
+
     with st.spinner("Scanning aircraft network..."):
+
         aircraft, api_total, error = fetch_area(
             center_lat,
             center_lon,
@@ -649,14 +766,15 @@ if refresh or st.session_state.last_update is None:
         )
 
     if aircraft is not None:
+
         st.session_state.aircraft = aircraft
         st.session_state.api_total = api_total
         st.session_state.last_update = datetime.now(timezone.utc)
         st.session_state.api_error = None
-        st.session_state.scan_center = (center_lat, center_lon)
-        st.session_state.scan_radius = radius
 
-        available_ids = {p["ICAO"] for p in aircraft}
+        available_ids = {
+            p["ICAO"] for p in aircraft
+        }
 
         if st.session_state.selected_icao not in available_ids:
             st.session_state.selected_icao = None
@@ -664,12 +782,12 @@ if refresh or st.session_state.last_update is None:
     else:
         st.session_state.api_error = error
 
-
 # ==========================================
 # STATUS
 # ==========================================
 
 if st.session_state.api_error:
+
     st.error(st.session_state.api_error)
 
     if st.session_state.last_update:
@@ -679,13 +797,13 @@ elif st.session_state.last_update:
     st.success("Aircraft data received successfully.")
 
 if st.session_state.last_update:
+
     st.caption(
         "Last scan: "
         + st.session_state.last_update.strftime(
             "%Y-%m-%d %H:%M:%S UTC"
         )
     )
-
 
 # ==========================================
 # PREPARE DATA
@@ -709,7 +827,6 @@ airborne_count = sum(
     if not p["On Ground"]
 )
 
-
 # ==========================================
 # METRICS
 # ==========================================
@@ -723,7 +840,6 @@ c4.metric("AIRBORNE", airborne_count)
 
 st.divider()
 
-
 # ==========================================
 # RADAR SCANNER
 # ==========================================
@@ -733,102 +849,56 @@ if page == "Radar Scanner":
     st.subheader("◉ 360° ROTATING RADAR")
 
     st.caption(
-        "Click an aircraft point to view its available flight information."
+        "The radar sweep rotates continuously using browser CSS animation. "
+        "Aircraft data updates when you scan."
     )
 
     if radar_targets:
 
-        # Fragment refreshes the radar sweep every second.
-        # It does not make a new API request.
-        @st.fragment(run_every="1s")
-        def live_radar():
+        radar_html = create_radar_html(
+            radar_targets,
+            radius,
+            st.session_state.selected_icao
+        )
 
-            current_targets = prepare_targets(
-                st.session_state.aircraft,
-                center_lat,
-                center_lon
-            )
+        components.html(
+            radar_html,
+            height=650,
+            scrolling=False
+        )
 
-            current_targets = [
-                p for p in current_targets
-                if p["Distance (NM)"] <= radius
-            ]
+        st.markdown("### SELECT AIRCRAFT")
 
-            fig = create_radar_chart(
-                current_targets,
-                radius,
-                st.session_state.selected_icao
-            )
+        options = list(range(len(radar_targets)))
+        selected_index = 0
 
-            event = st.plotly_chart(
-                fig,
-                use_container_width=True,
-                key="live_interactive_radar",
-                on_select="rerun",
-                selection_mode="points"
-            )
+        for i, plane in enumerate(radar_targets):
+            if plane["ICAO"] == st.session_state.selected_icao:
+                selected_index = i
+                break
 
-            # Read clicked point
-            try:
-                selected_points = event.selection.points
-
-                if selected_points:
-                    point_index = selected_points[-1]["point_index"]
-
-                    if 0 <= point_index < len(current_targets):
-                        st.session_state.selected_icao = (
-                            current_targets[point_index]["ICAO"]
-                        )
-
-            except (AttributeError, KeyError, IndexError, TypeError):
-                pass
-
-            selected_plane = None
-
-            for plane in current_targets:
-                if plane["ICAO"] == st.session_state.selected_icao:
-                    selected_plane = plane
-                    break
-
-            st.markdown("### SELECT AIRCRAFT")
-
-            if current_targets:
-
-                options = list(range(len(current_targets)))
-
-                selected_index = 0
-
-                for i, plane in enumerate(current_targets):
-                    if plane["ICAO"] == st.session_state.selected_icao:
-                        selected_index = i
-                        break
-
-                picker_index = st.selectbox(
-                    "Choose a detected aircraft",
-                    options,
-                    index=selected_index,
-                    format_func=lambda i: (
-                        (
-                            current_targets[i]["Callsign"]
-                            or current_targets[i]["ICAO"]
-                            or "UNKNOWN"
-                        )
-                        + " | "
-                        + str(current_targets[i]["Distance (NM)"])
-                        + " NM"
-                    ),
-                    key="live_aircraft_picker"
+        picker_index = st.selectbox(
+            "Choose a detected aircraft",
+            options,
+            index=selected_index,
+            format_func=lambda i: (
+                (
+                    radar_targets[i]["Callsign"]
+                    or radar_targets[i]["ICAO"]
+                    or "UNKNOWN"
                 )
+                + " | "
+                + str(radar_targets[i]["Distance (NM)"])
+                + " NM"
+            ),
+            key="radar_aircraft_picker"
+        )
 
-                selected_plane = current_targets[picker_index]
+        selected_plane = radar_targets[picker_index]
 
-                st.session_state.selected_icao = (
-                    selected_plane["ICAO"]
-                )
+        st.session_state.selected_icao = selected_plane["ICAO"]
 
-                show_aircraft_details(selected_plane)
-
-        live_radar()
+        show_aircraft_details(selected_plane)
 
         st.markdown("### ALL DETECTED AIRCRAFT")
 
@@ -847,7 +917,6 @@ if page == "Radar Scanner":
         st.write("API aircraft:", st.session_state.api_total)
         st.write("Valid aircraft:", len(aircraft))
         st.write("Radar targets:", len(radar_targets))
-
 
 # ==========================================
 # AIRCRAFT MAP
@@ -896,11 +965,13 @@ elif page == "Aircraft Map":
             margin=dict(l=0, r=0, t=0, b=0)
         )
 
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(
+            fig,
+            use_container_width=True
+        )
 
     else:
         st.warning("No aircraft available.")
-
 
 # ==========================================
 # FLIGHT SEARCH
@@ -925,6 +996,7 @@ elif page == "Flight Search":
     if submitted:
 
         with st.spinner("Searching aircraft..."):
+
             results, error = search_flight(query)
 
         st.session_state.search_results = results
@@ -965,7 +1037,6 @@ elif page == "Flight Search":
 
         show_aircraft_details(plane)
 
-
 # ==========================================
 # AIRCRAFT DATABASE
 # ==========================================
@@ -995,14 +1066,15 @@ elif page == "Aircraft Database":
         database = database[mask]
 
     if not database.empty:
+
         st.dataframe(
             database,
             use_container_width=True,
             hide_index=True
         )
+
     else:
         st.info("No aircraft records available.")
-
 
 # ==========================================
 # SYSTEM INFORMATION
@@ -1022,8 +1094,8 @@ elif page == "System Information":
     **Data Type:** ADS-B / MLAT
 
     **Features:**
-    - Circular rotating radar sweep
-    - Interactive aircraft selection
+    - Smooth 360-degree radar sweep
+    - Aircraft selection
     - Flight information viewer
     - Aircraft map
     - Callsign and ICAO search
@@ -1049,7 +1121,6 @@ elif page == "System Information":
     st.markdown(
         "[ADSB.lol Project](https://www.adsb.lol/)"
     )
-
 
 # ==========================================
 # FOOTER
